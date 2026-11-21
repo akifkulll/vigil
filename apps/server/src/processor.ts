@@ -18,6 +18,7 @@ import { type Database, duplicateKeys, loadFiling, removeReport } from "./db.ts"
 import { type AppEvent, EventStateError, finish, getEvent, pending, recordAttempt } from "./events.ts";
 import { QueueClosedError, type WriteQueue } from "./queue.ts";
 import { filesByDisclosure, type RawFile, readRawFile } from "./raw-files.ts";
+import { type FindingsRefreshOptions, refreshFindings } from "./report-findings.ts";
 import { periodOf, type RefreshOptions, refreshMetrics } from "./report-metrics.ts";
 import type { Store } from "./zova.ts";
 
@@ -99,14 +100,16 @@ export type ReportHandler = (report: CheckedReport, context: EventContext) => Pr
  * older version are removed: they are no longer the disclosure's numbers, and `report_failed` says why. An event whose
  * file is not stored changes nothing.
  *
- * After either, the metrics the report affects are computed again (#209): its own and, for a year-end report, the
- * TTM metrics of the next year's quarters (`report-metrics.ts`).
+ * After either, the metrics (#209) and findings (#210) the report affects are computed again: its own and, for a
+ * year-end report, the TTM metrics of the next year's quarters (`report-metrics.ts`, `report-findings.ts`). A report
+ * that fails a blocking check gets no findings.
  */
-export function loadInto(db: Database, options: RefreshOptions = {}): ReportHandler {
+export function loadInto(db: Database, options: RefreshOptions & FindingsRefreshOptions = {}): ReportHandler {
   return async (report) => {
     if (report.status === "checked") {
       await loadFiling(db, report.filing, { checks: report.checks });
       await refreshMetrics(db, report.filing.disclosure_id, options);
+      await refreshFindings(db, report.filing.disclosure_id, options);
     } else if (report.file !== null) {
       const removed = await periodOf(db, report.file.disclosure_id);
       if (await removeReport(db, report.file.disclosure_id)) {

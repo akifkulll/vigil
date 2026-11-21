@@ -8,14 +8,16 @@
  * until then the old database is untouched, and a failed rebuild leaves it as it was.
  *
  * Company metadata (#189) comes from KAP's disclosure list and sector pages, not from the raw files, so it is copied
- * from the old database when there is one; `bun run companies` refreshes it. Metrics are computed again for every
- * loaded report once all are loaded, so the TTM metrics find their previous year-end report (#209). Findings are not
- * copied: they were computed from the old facts and are computed again (#210).
+ * from the old database when there is one; `bun run companies` refreshes it. Metrics (#209) and findings (#210) are
+ * computed again for every loaded report once all are loaded, so the TTM metrics find their previous year-end report
+ * and reports that fail a blocking check produce no findings.
  */
 import { existsSync, renameSync, rmSync } from "node:fs";
+import type { VigilConfig } from "@vigil/core";
 import { CPI_FILE, loadCpiSeries, readCpiFile } from "./cpi.ts";
 import { close, connect, type Database, loadFiling, rows } from "./db.ts";
 import { checkStoredFile, checkSummary, latestFile } from "./processor.ts";
+import { computeAndStoreFindings } from "./report-findings.ts";
 import { computeAndStore } from "./report-metrics.ts";
 import type { Store } from "./zova.ts";
 
@@ -36,6 +38,8 @@ export interface RebuildSummary {
   cpi_months: number;
   /** Reports whose metrics were computed. */
   metric_reports: number;
+  /** Findings stored across all loaded reports that passed blocking checks (#210). */
+  findings: number;
   /** Companies whose metadata came from the old database. */
   companies_copied: number;
 }
@@ -80,7 +84,7 @@ async function copyCompanies(db: Database, oldPath: string): Promise<number> {
 export async function rebuildDatabase(
   store: Store,
   dbPath: string,
-  options: { onProgress?: (done: number, total: number) => void; cpiFile?: string } = {},
+  options: { onProgress?: (done: number, total: number) => void; cpiFile?: string; config?: VigilConfig } = {},
 ): Promise<RebuildSummary> {
   const tmp = rebuildPath(dbPath);
   removeFile(tmp); // left over from a rebuild that stopped
@@ -96,6 +100,7 @@ export async function rebuildDatabase(
     checks: { passed: 0, failed: 0, not_checked: 0, informational_differences: 0, known_errors: 0 },
     cpi_months: 0,
     metric_reports: 0,
+    findings: 0,
     companies_copied: 0,
   };
   const db = await connect(tmp);
@@ -119,7 +124,10 @@ export async function rebuildDatabase(
       options.onProgress?.(i + 1, ids.length);
     }
     for (const r of await rows(db, "SELECT disclosure_id FROM reports ORDER BY disclosure_id")) {
-      if (await computeAndStore(db, Number(r.disclosure_id), { cpi })) out.metric_reports += 1;
+      const disclosureId = Number(r.disclosure_id);
+      if (await computeAndStore(db, disclosureId, { cpi })) out.metric_reports += 1;
+      const f = await computeAndStoreFindings(db, disclosureId, { config: options.config });
+      if (f !== null) out.findings += f.added + f.kept;
     }
     if (existsSync(dbPath)) out.companies_copied = await copyCompanies(db, dbPath);
     await db.con.run("CHECKPOINT");

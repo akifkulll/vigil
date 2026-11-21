@@ -150,6 +150,7 @@ Primary key: `(rule, disclosure_id, config_version)`.
 
 - A run over a set of reports replaces their findings under its config version in one transaction: a finding found again keeps its `created_at`, one no longer found is removed, and findings of other reports or other config versions stay. A rerun never adds duplicates.
 - Loading a report again, or removing it, removes its findings and their steps.
+- **Computing (#210).** The processor computes a report's findings right after loading it and computing its metrics ([`report-findings.ts`](../apps/server/src/report-findings.ts)), from its own rows in DuckDB (`reports`, `facts`, `check_results`), and records the active configuration in `config_versions` (#187). A report that fails a blocking check (`severity = 'blocking' AND status = 'fail'`, known filing errors included) or has values without any check rows produces no findings.
 - On 2026/2 (246 files): 46 S1, 9 S2 and 2 S3 findings; KATMR's S1 is -2596 bps.
 
 ### `finding_steps` and `finding_inputs` — the calculation of each finding (#186)
@@ -273,7 +274,7 @@ DuckDB is derived (decision 0009). `bun run rebuild` builds it again from the ra
 - **What it loads:** the latest stored version of every disclosure is parsed, checked and loaded with its check results, as the processor does, together with the CPI series that ships with Vigil.
 - **The swap:** the new database is written to `<db>.rebuild` and moved over the old one only when it is complete. A rebuild that stops leaves the old database unchanged, and its partial file is removed.
 - **What is kept:** company metadata (#189) does not come from the raw files, so it is copied from the old database (`bun run companies` refreshes it).
-- **What is not kept:** metrics and findings came from the old facts. Metrics are computed again for every report once all are loaded, so each TTM finds its year-end report; findings are #210.
+- **What is not kept:** metrics and findings came from the old facts. Both are computed again for every report once all are loaded (#209, #210), so each TTM finds its year-end report and reports that fail a blocking check produce no findings.
 - **Output:** the command prints the parse and quality summary. It exits 1 when a stored report cannot be parsed or checked, or when the rebuild stops.
 - **Checked on 2026/2** (246 files imported into Zova): the rebuilt database has the same 246 reports, 118,915 facts, 35,700 check results and 246 companies as `bun run process` on the same archive, row for row (`loaded_at` aside).
 
