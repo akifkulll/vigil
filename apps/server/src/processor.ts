@@ -18,7 +18,7 @@ import { type Database, duplicateKeys, loadFiling, removeReport } from "./db.ts"
 import { type AppEvent, EventStateError, finish, getEvent, pending, recordAttempt } from "./events.ts";
 import { QueueClosedError, type WriteQueue } from "./queue.ts";
 import { filesByDisclosure, type RawFile, readRawFile } from "./raw-files.ts";
-import { type FindingsRefreshOptions, refreshFindings } from "./report-findings.ts";
+import { computeAndStoreFindings, type FindingsRefreshOptions, prepareFindingsConfig } from "./report-findings.ts";
 import { periodOf, type RefreshOptions, refreshMetrics } from "./report-metrics.ts";
 import type { Store } from "./zova.ts";
 
@@ -105,11 +105,21 @@ export type ReportHandler = (report: CheckedReport, context: EventContext) => Pr
  * that fails a blocking check gets no findings.
  */
 export function loadInto(db: Database, options: RefreshOptions & FindingsRefreshOptions = {}): ReportHandler {
+  let preparedConfig: ReturnType<typeof prepareFindingsConfig> | null = null;
   return async (report) => {
     if (report.status === "checked") {
+      // Load and store the configuration once before touching DuckDB so a broken config fails before loading the report.
+      preparedConfig ??= prepareFindingsConfig(db, options);
+      let config: Awaited<typeof preparedConfig>;
+      try {
+        config = await preparedConfig;
+      } catch (e) {
+        preparedConfig = null;
+        throw e;
+      }
       await loadFiling(db, report.filing, { checks: report.checks });
       await refreshMetrics(db, report.filing.disclosure_id, options);
-      await refreshFindings(db, report.filing.disclosure_id, options);
+      await computeAndStoreFindings(db, report.filing.disclosure_id, { ...options, config, storeConfig: false });
     } else if (report.file !== null) {
       const removed = await periodOf(db, report.file.disclosure_id);
       if (await removeReport(db, report.file.disclosure_id)) {

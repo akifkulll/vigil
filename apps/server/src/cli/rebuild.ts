@@ -60,6 +60,6 @@ console.log(
   `Checks: passed ${c.passed} | failed ${c.failed} | known errors ${c.known_errors} | not checked ${c.not_checked} | ` +
     `informational differences ${c.informational_differences}`,
 );
-console.log(`Reports blocked by a failing check: ${s.blocked}`);
+console.log(`Reports blocked by a failing check: ${s.blocked} | findings: ${s.findings}`);
 console.log(`Company metadata kept from the old database: ${s.companies_copied} (bun run companies refreshes it)`);
 process.exit(s.failed.length > 0 ? 1 : 0);

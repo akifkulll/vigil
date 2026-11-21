@@ -17,7 +17,7 @@ import type { VigilConfig } from "@vigil/core";
 import { CPI_FILE, loadCpiSeries, readCpiFile } from "./cpi.ts";
 import { close, connect, type Database, loadFiling, rows } from "./db.ts";
 import { checkStoredFile, checkSummary, latestFile } from "./processor.ts";
-import { computeAndStoreFindings } from "./report-findings.ts";
+import { computeAndStoreFindings, prepareFindingsConfig } from "./report-findings.ts";
 import { computeAndStore } from "./report-metrics.ts";
 import type { Store } from "./zova.ts";
 
@@ -105,6 +105,7 @@ export async function rebuildDatabase(
   };
   const db = await connect(tmp);
   try {
+    const config = await prepareFindingsConfig(db, { config: options.config });
     const cpi = readCpiFile(options.cpiFile ?? CPI_FILE);
     out.cpi_months = await loadCpiSeries(db, cpi);
     for (const [i, id] of ids.entries()) {
@@ -126,7 +127,7 @@ export async function rebuildDatabase(
     for (const r of await rows(db, "SELECT disclosure_id FROM reports ORDER BY disclosure_id")) {
       const disclosureId = Number(r.disclosure_id);
       if (await computeAndStore(db, disclosureId, { cpi })) out.metric_reports += 1;
-      const f = await computeAndStoreFindings(db, disclosureId, { config: options.config });
+      const f = await computeAndStoreFindings(db, disclosureId, { config, storeConfig: false });
       if (f !== null) out.findings += f.added + f.kept;
     }
     if (existsSync(dbPath)) out.companies_copied = await copyCompanies(db, dbPath);

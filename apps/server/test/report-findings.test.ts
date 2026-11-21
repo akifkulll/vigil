@@ -29,7 +29,7 @@ import { loadInto, processPending } from "../src/processor.ts";
 import { WriteQueue } from "../src/queue.ts";
 import { storeRawFile } from "../src/raw-files.ts";
 import { rebuildDatabase } from "../src/rebuild.ts";
-import { computeReportFindings, readLoadedFiling, refreshFindings } from "../src/report-findings.ts";
+import { computeAndStoreFindings, computeReportFindings, readLoadedFiling } from "../src/report-findings.ts";
 import { migrateStore } from "../src/store-schema.ts";
 import { memoryStore, type Store } from "../src/zova.ts";
 import { type FixtureFiling, fileName, kapHtml } from "./fixtures/index.ts";
@@ -397,12 +397,12 @@ describe("running S1–S3 and storing steps and inputs", () => {
     const f1 = allThreeRulesFiling();
     await loadFiling(db, parseKapXls(kapHtml(f1), fileName(f1)));
     const t1 = new Date("2026-11-16T08:00:00Z");
-    const w1 = await refreshFindings(db, f1.disclosureId, { now: t1 });
+    const w1 = await computeAndStoreFindings(db, f1.disclosureId, { now: t1 });
     expect(w1).toEqual({ added: 3, kept: 0, removed: 0 });
 
     // Rerunning on the same report keeps all 3 findings and their created_at timestamp.
     const t2 = new Date("2026-11-17T08:00:00Z");
-    const w2 = await refreshFindings(db, f1.disclosureId, { now: t2 });
+    const w2 = await computeAndStoreFindings(db, f1.disclosureId, { now: t2 });
     expect(w2).toEqual({ added: 0, kept: 3, removed: 0 });
     const timestamps = await rows(db, "SELECT created_at FROM findings WHERE disclosure_id = $1", [
       BigInt(f1.disclosureId),
@@ -483,12 +483,12 @@ describe("no findings for a report that fails a blocking check", () => {
   test("a report with facts but no check_results rows is treated as blocked and loses any earlier findings", async () => {
     const katmr = katmrCompleteFiling();
     await loadFiling(db, katmr);
-    await refreshFindings(db, KATMR);
+    await computeAndStoreFindings(db, KATMR);
     expect(await rows(db, "SELECT id FROM findings WHERE disclosure_id = $1", [BigInt(KATMR)])).toHaveLength(1);
 
     // Simulate an unchecked database state (e.g. upgraded from before migration 4 without reloading check_results).
     await db.con.run("DELETE FROM check_results WHERE disclosure_id = $1", [BigInt(KATMR)]);
-    const w = await refreshFindings(db, KATMR);
+    const w = await computeAndStoreFindings(db, KATMR);
     expect(w).toEqual({ added: 0, kept: 0, removed: 1 });
     expect(await rows(db, "SELECT id FROM findings WHERE disclosure_id = $1", [BigInt(KATMR)])).toEqual([]);
   });
@@ -507,7 +507,28 @@ describe("no findings for a report that fails a blocking check", () => {
   });
 
   test("returns null when the disclosure is not loaded in DuckDB", async () => {
-    expect(await refreshFindings(db, 9_999_999)).toBeNull();
+    expect(await computeAndStoreFindings(db, 9_999_999)).toBeNull();
+  });
+
+  test("a broken config throws before loading the report or its metrics into DuckDB", async () => {
+    const f = allThreeRulesFiling();
+    putHtml(fileName(f), kapHtml(f));
+    const prev = process.env.VIGIL_CONFIG;
+    process.env.VIGIL_CONFIG = join(tmpdir(), "vigil-missing-config-for-test.json");
+    try {
+      const s = await processPending(store, queue, { handle: loadInto(db) });
+      expect(s.processed).toBe(0);
+      expect(s.errors).toHaveLength(1);
+      expect(
+        await rows(db, "SELECT disclosure_id FROM reports WHERE disclosure_id = $1", [BigInt(f.disclosureId)]),
+      ).toEqual([]);
+      expect(
+        await rows(db, "SELECT metric_code FROM metrics WHERE disclosure_id = $1", [BigInt(f.disclosureId)]),
+      ).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.VIGIL_CONFIG;
+      else process.env.VIGIL_CONFIG = prev;
+    }
   });
 });
 

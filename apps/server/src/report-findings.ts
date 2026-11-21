@@ -171,14 +171,19 @@ export interface FindingsRefreshOptions {
   now?: Date;
 }
 
-async function ensureConfig(db: Database, options: FindingsRefreshOptions): Promise<VigilConfig> {
+/**
+ * Load (or use `options.config`) and store the configuration version in `config_versions` (#187) once.
+ * Callers running over many reports (`loadInto`, `rebuildDatabase`) call this once and pass `storeConfig: false`.
+ */
+export async function prepareFindingsConfig(db: Database, options: FindingsRefreshOptions = {}): Promise<VigilConfig> {
   if (options.config !== undefined) {
     const text = JSON.stringify(options.config, (_k, v) => (typeof v === "bigint" ? Number(v) : v), 2);
     await storeConfigVersion(db, text, options.config.version, { now: options.now });
     return options.config;
   }
+  const config = loadConfig();
   await storeActiveConfig(db, { now: options.now });
-  return loadConfig();
+  return config;
 }
 
 /**
@@ -189,20 +194,14 @@ async function ensureConfig(db: Database, options: FindingsRefreshOptions): Prom
 export async function computeAndStoreFindings(
   db: Database,
   disclosureId: number,
-  options: FindingsRefreshOptions = {},
+  options: FindingsRefreshOptions & { storeConfig?: boolean } = {},
 ): Promise<FindingsWrite | null> {
+  const config =
+    options.config !== undefined && options.storeConfig === false
+      ? options.config
+      : await prepareFindingsConfig(db, options);
   const loaded = await readLoadedFiling(db, disclosureId);
   if (loaded === null) return null;
-  const config = await ensureConfig(db, options);
   const signals = computeReportFindings(loaded.filing, config, { blocked: loaded.blocked });
   return writeFindings(db, [disclosureId], signals, { configVersion: config.version, now: options.now });
-}
-
-/** Refresh the findings of a loaded report (#210). Returns the write summary, or null when the report is not loaded. */
-export async function refreshFindings(
-  db: Database,
-  disclosureId: number,
-  options: FindingsRefreshOptions = {},
-): Promise<FindingsWrite | null> {
-  return computeAndStoreFindings(db, disclosureId, options);
 }
