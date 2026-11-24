@@ -63,7 +63,7 @@ export function parseIntParam(
     invalidRequest(parameter, `${parameter} en az ${min} olmalı.`, { min });
   }
   if (n > max) {
-    invalidRequest(parameter, `${parameter} ${max}'den büyük olamaz.`, { max });
+    invalidRequest(parameter, `${parameter} en fazla ${max} olabilir.`, { max });
   }
   return n;
 }
@@ -154,9 +154,10 @@ export function parseCompanyCode(raw: string | undefined, parameter = "code"): s
   return trimmed.toUpperCase();
 }
 
-/** Parse a KAP disclosure document id (positive integer). */
-export function parseDocumentId(raw: string | undefined, parameter = "document_id"): number {
-  return parseIntParam(raw, parameter, { min: 1 });
+/** Parse a KAP disclosure document id (positive integer), returning the validated string. */
+export function parseDocumentId(raw: string | undefined, parameter = "document_id"): string {
+  parseIntParam(raw, parameter, { min: 1 });
+  return raw as string;
 }
 
 /** Parse a line-item row id (e.g. `general_role_310003-row-3`). */
