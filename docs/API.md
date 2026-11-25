@@ -251,13 +251,15 @@ Every error has the same shape and an HTTP status:
   "quarter": 2,
   "template": "general",
   "size": { "value": "-2596", "unit": "bps", "status": "ok" },
-  "headline": "3 aylık brüt marj %47,50'den %21,54'e geriledi.",
+  "headline": "3 aylık brüt marj bir yıl önceki %47,50 seviyesinden %21,54 seviyesine geriledi.",
   "config_version": "2026-11-01",
   "created_at": "2026-11-01T12:00:00Z"
 }
 ```
 
 `rule` values: `gross_margin_change` (S1), `profit_cash_divergence` (S2), `restated_comparatives` (S3). `size` is what lists sort by. `headline` states the change; it never says what to do.
+
+`GET /v1/findings` lists the findings under the configuration in force (`config_version`). Filters, each optional and combined: `rule`, `template` (the report's template family), `quarter` (`2026-2`) and `company` (any code of the ticker group). `sort` is `size` or `date` (the report's publication time); the default `-size` puts the largest first. `size` sorts by the rank score, which is comparable within a rule only (S1 basis points, S2 TL, S3 a count), so sort by size with a `rule` filter.
 
 ### Finding (detail)
 
@@ -278,7 +280,7 @@ The list item plus `calculation` (as in [Calculation](#calculation)), `threshold
   "quarter": 2,
   "template": "general",
   "size": { "value": "-2596", "unit": "bps", "status": "ok" },
-  "headline": "3 aylık brüt marj %47,50'den %21,54'e geriledi.",
+  "headline": "3 aylık brüt marj bir yıl önceki %47,50 seviyesinden %21,54 seviyesine geriledi.",
   "config_version": "2026-11-01",
   "created_at": "2026-11-01T12:00:00Z",
   "thresholds": { "min_revenue_try": "100000000", "min_abs_change_bps": 1000 },
