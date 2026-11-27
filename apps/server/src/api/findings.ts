@@ -1,19 +1,29 @@
 /**
- * `GET /v1/findings?rule=&template=&quarter=&company=&limit=&cursor=&sort=` (#223, docs/API.md "Finding (list item)"):
- * the findings under the configuration in force (#69), without their steps (those are in `/v1/findings/{id}`, #224).
- *
- * Filters, each optional and combined with AND: `rule` (`gross_margin_change`, `profit_cash_divergence`,
- * `restated_comparatives`), `template` (the report's template family), `quarter` (`2026-2`) and `company` (any code of
- * the ticker group). `sort` is `size` (the rank score, comparable within a rule only: docs/SCHEMA.md) or `date` (the
- * report's publication time); the default is `-size`, the largest first. Paging uses the shared helper (#215).
+ * `GET /v1/findings` (#223) and `GET /v1/findings/{id}` (#224, docs/API.md "Finding"):
+ * - The list returns findings under the configuration in force (#69), without their steps. Filters (optional, AND):
+ *   `rule`, `template`, `quarter` (`2026-2`) and `company` (any code of the ticker group). `sort` is `size` or `date`
+ *   (default `-size`). Paging uses the shared helper (#215).
+ * - The detail returns one finding with its calculation steps and input sources (`readCalculation`, #186), the
+ *   thresholds from its `config_version` (#187) and its `methodology_url`.
  */
-import type { Finding, RuleId, Template } from "@vigil/api-types";
+import type {
+  Calculation as ApiCalculation,
+  CalculationStep as ApiCalculationStep,
+  Consolidation,
+  Finding,
+  FindingDetail,
+  RuleId,
+  Template,
+} from "@vigil/api-types";
+import { type Calculation as CoreCalculation, parseConfig, type VigilConfig } from "@vigil/core";
 import { loadConfig } from "../config.ts";
 import { type Database, rows } from "../db.ts";
-import type { Routes } from "./app.ts";
+import { readCalculation } from "../findings-store.ts";
+import { ApiError, type Routes } from "./app.ts";
 import { listResponse, pageSql, parseListQuery } from "./paging.ts";
 import {
   parseCompanyCode,
+  parseFindingId,
   parseOptionalEnumParam,
   parseOptionalQuarterParam,
   RULE_IDS,
@@ -25,7 +35,7 @@ const SORT_FIELDS = ["size", "date"] as const;
 const FINDINGS_SQL = `
 SELECT
     f.id, f.rule, f.title, f.company_code, f.disclosure_id, f.year, f.quarter, f.size_value, f.size_unit,
-    f.rank_score, f.summary, f.config_version, strftime(f.created_at, '%Y-%m-%dT%H:%M:%SZ') AS created_at,
+    f.rank_score, f.summary, f.formula, f.config_version, strftime(f.created_at, '%Y-%m-%dT%H:%M:%SZ') AS created_at,
     r.template_family, r.raw_ticker_group, r.published_at
 FROM findings f
 JOIN reports r USING (disclosure_id)
@@ -82,6 +92,65 @@ function toFinding(r: Record<string, unknown>): Finding {
   };
 }
 
+function toApiCalculation(calc: CoreCalculation): ApiCalculation {
+  return {
+    formula: calc.formula,
+    definition: calc.definition,
+    steps: calc.steps.map((step): ApiCalculationStep => {
+      if (!("value" in step)) return step;
+      const cons: Consolidation = step.value.source.report.consolidation === "consolidated" ? "consolidated" : "solo";
+      return {
+        id: step.id,
+        label: step.label,
+        value: {
+          ...step.value,
+          source: {
+            ...step.value.source,
+            report: {
+              ...step.value.source.report,
+              consolidation: cons,
+            },
+          },
+        },
+      };
+    }),
+  };
+}
+
+function thresholdsForRule(rule: RuleId, config: VigilConfig | null): Record<string, string | number> {
+  if (config === null) return {};
+  switch (rule) {
+    case "gross_margin_change":
+      return {
+        min_revenue_try: config.s1_gross_margin.min_three_month_revenue_tl.toString(),
+        min_abs_change_bps: config.s1_gross_margin.x_min_abs_delta_bps,
+      };
+    case "profit_cash_divergence":
+      return {
+        min_net_profit_ytd_try: config.s2_profit_cash.min_net_profit_ytd_tl.toString(),
+        max_operating_cash_flow_ytd_try: config.s2_profit_cash.max_operating_cash_flow_ytd_tl.toString(),
+      };
+    case "restated_comparatives":
+      return {
+        min_restated_lines: 1,
+      };
+  }
+}
+
+async function configForVersion(db: Database, version: string): Promise<VigilConfig | null> {
+  const [stored] = await rows(db, "SELECT content FROM config_versions WHERE version = $1", [version]);
+  if (stored !== undefined) {
+    return parseConfig(String(stored.content), `config_versions:${version}`);
+  }
+  try {
+    const active = loadConfig();
+    if (active.version === version) return active;
+  } catch {
+    // No config file or mismatched version; return empty thresholds rather than guessing.
+  }
+  return null;
+}
+
 export interface FindingRoutesOptions {
   /** The configuration version whose findings are listed; the active configuration file's by default. */
   configVersion?: string;
@@ -121,6 +190,44 @@ export function findingRoutes(db: Database, options: FindingRoutesOptions = {}):
         values,
       );
       return c.json(listResponse(page.map(toFinding), Number(count?.n ?? 0), query));
+    });
+
+    v1.get("/findings/:id", async (c) => {
+      const id = parseFindingId(c.req.param("id"));
+      const [row] = await rows(
+        db,
+        `SELECT * FROM (${FINDINGS_SQL})
+         WHERE id = $1 AND config_version = $2
+         ORDER BY published_at DESC NULLS LAST, disclosure_id DESC
+         LIMIT 1`,
+        [id, configVersion],
+      );
+      if (row === undefined) {
+        throw new ApiError("not_found", `Bulgu bulunamadı: ${id}`, { id });
+      }
+      const finding = toFinding(row);
+      const storedCalc = await readCalculation(db, {
+        rule: finding.rule,
+        disclosure_id: Number(row.disclosure_id),
+        config_version: finding.config_version,
+      });
+      const methodologyUrl = storedCalc?.definition.url ?? `/methodology/${finding.rule}`;
+      const calculation: ApiCalculation =
+        storedCalc !== null
+          ? toApiCalculation(storedCalc)
+          : {
+              formula: String(row.formula),
+              definition: { id: finding.rule, version: finding.config_version, url: methodologyUrl },
+              steps: [],
+            };
+      const config = await configForVersion(db, finding.config_version);
+      const detail: FindingDetail = {
+        ...finding,
+        thresholds: thresholdsForRule(finding.rule, config),
+        methodology_url: methodologyUrl,
+        calculation,
+      };
+      return c.json(detail);
     });
   };
 }
