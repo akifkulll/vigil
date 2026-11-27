@@ -80,7 +80,7 @@ export function companyRoutes(db: Database): Routes {
       const [count] = await rows(db, `SELECT count(*) AS n FROM (${COMPANIES_SQL}) ${where}`, values);
       const page = await rows(
         db,
-        `SELECT * FROM (${COMPANIES_SQL}) ${where} ${pageSql(query, { code: "code", title: "title" }, "code")}`,
+        `SELECT * FROM (${COMPANIES_SQL}) ${where} ${pageSql(query, { code: "code", title: "title COLLATE tr" }, "code")}`,
         values,
       );
       return c.json(listResponse(page.map(toCompany), Number(count?.n ?? 0), query));

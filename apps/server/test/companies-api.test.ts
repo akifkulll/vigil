@@ -166,8 +166,7 @@ describe("Turkish search, after the company list is loaded", () => {
     expect(codesOf(await list("?sort=-title")).slice(3)).toEqual(["TSTBN", "TSTEM"]);
   });
 
-  // Fails until #378: titles are ordered by their bytes, so ÇELİK comes after TÜRKİYE. Remove `.failing` with the fix.
-  test.failing("sort by title in Turkish order (#378)", async () => {
+  test("sort by title in Turkish order (#378)", async () => {
     expect(codesOf(await list("?sort=title"))).toEqual(["TSTHD", "TSTGN", "TSTIS", "TSTBN", "TSTEM"]);
     expect(codesOf(await list("?sort=-title"))).toEqual(["TSTIS", "TSTGN", "TSTHD", "TSTBN", "TSTEM"]);
   });
