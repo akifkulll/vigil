@@ -1,6 +1,6 @@
 /**
  * Parser and findings on real filings (data/raw/2026_2, listed in tests/raw_files.txt). Expected numbers come from
- * tests/golden/, never from parser output (#20); filings without a golden file only get structural checks (#130).
+ * tests/golden/, never from parser output (#20); the numbers a test checks come from a golden file (#130).
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -16,13 +16,18 @@ import {
 } from "../src/index.ts";
 import { CONFIG, GOLDEN_DIR, RAW_DIR, rawFile, readCsv } from "./helpers.ts";
 
-/** value_tl of one hand-copied golden cell. */
-function goldenValue(filing: string, rowId: string, column: string): bigint {
+/** value_tl (or raw_value) of one hand-copied golden cell. */
+function goldenValue(
+  filing: string,
+  rowId: string,
+  column: string,
+  field: "value_tl" | "raw_value" = "value_tl",
+): bigint {
   const line = readCsv(join(GOLDEN_DIR, "2026_2", `${filing}.csv`)).find(
     (l) => l.row_id === rowId && l.column === column,
   );
   if (!line) throw new Error(`no golden value for ${filing} ${rowId} ${column}`);
-  return BigInt(line.value_tl as string);
+  return BigInt(line[field] as string);
 }
 
 const have = rawFile("2026_2", "KATMR_1651411_2026_2.xls") !== null;
@@ -53,12 +58,22 @@ describe.skipIf(!have)("real filings (raw files)", () => {
     expect(sig?.summary_metrics.delta_bps).toBe(expectedDelta);
   });
 
-  test("SANFM: general 310000 with a separate comprehensive income statement", () => {
+  test("SANFM: general 310000 with a separate comprehensive income statement, S1 from the golden file (#130)", () => {
     const pf = load("SANFM_1650384_2026_2.xls");
     expect([pf.company_code, pf.template_family]).toEqual(["SANFM", "general"]);
     expect(pf.role_codes).toEqual(expect.arrayContaining(["310000", "420000"]));
     expect(isRealSectorFiling(pf, CONFIG)[0]).toBe(true);
-    expect(detectGrossMarginDeviation(pf, CONFIG)).not.toBeNull();
+
+    const golden = (row: number, col: number) =>
+      goldenValue("SANFM_1650384", `general_role_310000-row-${row}`, `col-order-class-${col}`);
+    const [revC, revP, gpC, gpP] = [golden(3, 6), golden(3, 7), golden(5, 6), golden(5, 7)];
+    const expectedDelta = pyRound((Number(gpC) / Number(revC) - Number(gpP) / Number(revP)) * 10_000);
+
+    const sig = detectGrossMarginDeviation(pf, CONFIG);
+    expect(sig).not.toBeNull();
+    expect(sig?.summary_metrics.current_q_revenue_tl).toBe(revC);
+    expect(sig?.summary_metrics.prior_year_q_revenue_restated_tl).toBe(revP);
+    expect(sig?.summary_metrics.delta_bps).toBe(expectedDelta);
   });
 
   test("A1CAP: a brokerage is excluded from the real-sector margin finding", () => {
@@ -68,7 +83,7 @@ describe.skipIf(!have)("real filings (raw files)", () => {
     expect(detectGrossMarginDeviation(pf, CONFIG)).toBeNull();
   });
 
-  test("AKBNK: banks template, million TL scale, TP / YP / Toplam columns", () => {
+  test("AKBNK: banks template, million TL scale, TP / YP / Toplam columns, row 4 from the golden file (#27, #130)", () => {
     const pf = load("AKBNK_1637884_2026_2.xls");
     expect([pf.company_code, pf.template_family, pf.scale_unit, pf.scale_multiplier]).toEqual([
       "AKBNK",
@@ -87,9 +102,14 @@ describe.skipIf(!have)("real filings (raw files)", () => {
       total?.raw_value as bigint,
     );
     expect(total?.normalized_value_tl).toBe((total?.raw_value as bigint) * 1_000_000n);
+    for (const column of ["col-order-class-4", "col-order-class-5", "col-order-class-6"]) {
+      expect(row4.get(column)?.normalized_value_tl).toBe(
+        goldenValue("AKBNK_1637884", "banks_role_210011-row-4", column),
+      );
+    }
   });
 
-  test("DOHOL: holding template, thousand TL scale", () => {
+  test("DOHOL: holding template, thousand TL scale, cash from the golden file (#28, #130)", () => {
     const pf = load("DOHOL_1648007_2026_2.xls");
     expect([pf.company_code, pf.template_family, pf.scale_unit, pf.scale_multiplier]).toEqual([
       "DOHOL",
@@ -100,11 +120,18 @@ describe.skipIf(!have)("real filings (raw files)", () => {
     const cash = pf.facts.find(
       (f) => f.row_id === "holding_role_210015-row-4" && f.column_class === "col-order-class-4",
     );
-    expect(cash?.normalized_value_tl).toBe((cash?.raw_value as bigint) * 1_000n);
+    const rowId = "holding_role_210015-row-4";
+    expect(cash?.raw_value).toBe(goldenValue("DOHOL_1648007", rowId, "col-order-class-4", "raw_value"));
+    expect(cash?.normalized_value_tl).toBe(goldenValue("DOHOL_1648007", rowId, "col-order-class-4"));
   });
 
-  test("AKENR: S2 cash-profit divergence", () => {
-    expect(detectCashProfitQualityDivergence(load("AKENR_1649474_2026_2.xls"), CONFIG)).not.toBeNull();
+  test("AKENR: S2 cash-profit divergence, inputs from the golden file (#130)", () => {
+    const sig = detectCashProfitQualityDivergence(load("AKENR_1649474_2026_2.xls"), CONFIG);
+    expect(sig).not.toBeNull();
+    const golden = (rowId: string) => goldenValue("AKENR_1649474", rowId, "col-order-class-4");
+    expect(sig?.summary_metrics.net_profit_ytd_tl).toBe(golden("general_role_310000-row-59"));
+    expect(sig?.summary_metrics.operating_cash_flow_ytd_tl).toBe(golden("general_role_520003-row-2"));
+    expect(sig?.summary_metrics.tms29_net_monetary_position_ytd_tl).toBe(golden("general_role_310000-row-52"));
   });
 
   test("BIOEN: S3 restated third balance sheet column, evidence from the golden file (#25, #130)", () => {
